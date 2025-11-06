@@ -75,7 +75,12 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         if platform == 'local':
             batch_size = min(1000, M)
         else:
-            batch_size = M
+            # On supercomputer, use larger batches but still reasonable size
+            # Calculate maximum batch size based on available memory (assume 50GB available)
+            # Each element is 8 bytes, so: batch_size * N * 8 < 50GB
+            max_memory_gb = 50.0  # Conservative estimate for available memory
+            max_batch_size = int(max_memory_gb * 1024**3 / (N * 8))
+            batch_size = min(max_batch_size, M, 10000000)  # Max 10M trajectories per batch
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -326,16 +331,28 @@ def main():
         try:
             import psutil
             available_memory = psutil.virtual_memory().available / 1024**3
-            actual_batch_size = batch_size if batch_size else (min(1000, M) if platform == 'local' else M)
+            if batch_size is None:
+                if platform == 'local':
+                    actual_batch_size = min(1000, M)
+                else:
+                    max_memory_gb = 50.0
+                    max_batch_size = int(max_memory_gb * 1024**3 / (N * 8))
+                    actual_batch_size = min(max_batch_size, M, 10000000)
+            else:
+                actual_batch_size = batch_size
             required_memory = actual_batch_size * N * 8 / 1024**3
             print(f"Available memory: {available_memory:.2f} GB")
             print(f"Expected usage per batch: ~{required_memory:.3f} GB")
             if required_memory > available_memory * 0.8:
                 print("WARNING: Possibly insufficient memory!")
                 print("Script will automatically use smaller batch size.")
-                if batch_size is None and platform == 'local':
-                    max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
-                    batch_size = max(100, min(1000, max_batch_size))
+                if batch_size is None:
+                    if platform == 'local':
+                        max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
+                        batch_size = max(100, min(1000, max_batch_size))
+                    else:
+                        max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
+                        batch_size = min(max_batch_size, M, 10000000)
                     print(f"Automatically set batch size: {batch_size:,} trajectories")
         except ImportError:
             pass
