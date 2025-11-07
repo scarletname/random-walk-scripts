@@ -136,15 +136,20 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         
         print(f"  Aggregating results...")
         sys.stdout.flush()
-        sum_positions += np.sum(batch_positions)
-        sum_squared_positions += np.sum(batch_positions.astype(np.int64) ** 2)
+        agg_start = time.time()
         
-        if len(sum_positions_for_std) < 100000:
-            sample_size = min(100, len(batch_positions))
+        # Use efficient accumulation without creating large intermediate arrays
+        sum_positions += float(np.sum(batch_positions))
+        sum_squared_positions += float(np.sum(batch_positions.astype(np.int64) ** 2))
+        
+        # Sample positions more efficiently - only keep limited sample
+        if len(sum_positions_for_std) < 50000:  # Reduced from 100000
+            sample_size = min(50, len(batch_positions))  # Reduced from 100
             if sample_size > 0:
                 indices = np.random.choice(len(batch_positions), sample_size, replace=False)
-                sum_positions_for_std.extend(batch_positions[indices].tolist())
+                sum_positions_for_std.extend(batch_positions[indices].astype(np.int32).tolist())
         
+        # Find min/max more efficiently
         batch_min = int(np.min(batch_positions))
         batch_max = int(np.max(batch_positions))
         if batch_min < min_position:
@@ -153,8 +158,16 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             max_position = batch_max
         
         del batch_positions
-        print(f"  Results aggregated")
+        agg_time = time.time() - agg_start
+        print(f"  Results aggregated in {agg_time:.2f} seconds")
         sys.stdout.flush()
+        
+        # Force garbage collection every 10 batches to prevent memory buildup
+        if (batch_idx + 1) % 10 == 0:
+            import gc
+            gc.collect()
+            print(f"  Memory cleanup performed (batch {batch_idx + 1})")
+            sys.stdout.flush()
         
         # Print progress and batch completion
         batch_elapsed = time.time() - batch_start_time
