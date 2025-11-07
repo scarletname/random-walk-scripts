@@ -75,10 +75,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         if platform == 'local':
             batch_size = min(1000, M)
         else:
-            # On supercomputer, use smaller batches to prevent memory accumulation
+            # On supercomputer, use optimized batch size for speed and stability
             # Each element is 8 bytes, so: batch_size * N * 8 = memory
-            # For N=10000, 100K trajectories = 100000 * 10000 * 8 = 8GB (safer for long runs)
-            batch_size = min(100000, M)  # 100K trajectories per batch = ~8GB for N=10000
+            # For N=10000, 200K trajectories = 200000 * 10000 * 8 = 16GB (optimized for speed)
+            batch_size = min(200000, M)  # 200K trajectories per batch = ~16GB for N=10000
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -108,10 +108,6 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         end_idx = min(start_idx + batch_size, M)
         current_batch_size = end_idx - start_idx
         
-        # Print batch start message
-        print(f"Starting batch {batch_idx + 1}/{num_batches} (trajectories {start_idx:,} to {end_idx:,})...")
-        sys.stdout.flush()
-        
         # On supercomputer, process in chunks to avoid memory issues
         if platform == 'supercomputer' and current_batch_size > 50000:
             chunk_size = 50000
@@ -122,9 +118,6 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
                 chunk_start = chunk_idx * chunk_size
                 chunk_end = min(chunk_start + chunk_size, current_batch_size)
                 chunk_size_actual = chunk_end - chunk_start
-                
-                print(f"  Processing chunk {chunk_idx + 1}/{num_chunks} ({chunk_start:,} to {chunk_end:,})...")
-                sys.stdout.flush()
                 
                 # Generate random numbers for this chunk
                 chunk_random = np.random.random((chunk_size_actual, N))
@@ -170,28 +163,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             
         else:
             # Standard processing for local or small batches
-            print(f"  Generating random numbers for {current_batch_size:,} trajectories...")
-            sys.stdout.flush()
-            gen_start = time.time()
             random_values = np.random.random((current_batch_size, N))
-            gen_time = time.time() - gen_start
-            print(f"  Random generation completed in {gen_time:.2f} seconds")
-            sys.stdout.flush()
-            
-            print(f"  Computing positions (memory-efficient method)...")
-            sys.stdout.flush()
-            pos_start = time.time()
             positive_steps = np.sum(random_values > 0.5, axis=1, dtype=np.int32)
             batch_positions = (positive_steps * 2 - N).astype(np.int32)
-            pos_time = time.time() - pos_start
-            print(f"  Positions computed in {pos_time:.2f} seconds")
-            sys.stdout.flush()
-            
             del random_values, positive_steps
-            
-            print(f"  Aggregating results...")
-            sys.stdout.flush()
-            agg_start = time.time()
             
             sum_positions += np.sum(batch_positions, dtype=np.float64)
             batch_squared = np.sum(batch_positions.astype(np.int64) ** 2, dtype=np.float64)
@@ -217,16 +192,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             if batch_max > max_position:
                 max_position = batch_max
             
-            agg_time = time.time() - agg_start
-            print(f"  Results aggregated in {agg_time:.2f} seconds")
-            sys.stdout.flush()
+            del batch_positions
         
         # For supercomputer chunks, aggregation already done, just cleanup
         if platform == 'supercomputer' and current_batch_size > 50000:
-            del batch_positions
-            print(f"  All chunks processed and aggregated")
-            sys.stdout.flush()
-        else:
             del batch_positions
         
         # Additional cleanup on supercomputer after aggregation
@@ -234,32 +203,57 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             import gc
             gc.collect()
         
-        # Force garbage collection every batch on supercomputer, every 5 on local
-        if platform == 'supercomputer' or (batch_idx + 1) % 5 == 0:
+        # Force garbage collection every batch on supercomputer, every 10 on local
+        if platform == 'supercomputer':
+            if (batch_idx + 1) % 10 == 0:  # Cleanup every 10 batches, not every batch
+                import gc
+                gc.collect()
+        elif (batch_idx + 1) % 10 == 0:
             import gc
             gc.collect()
-            if platform == 'supercomputer':
-                print(f"  Memory cleanup performed (batch {batch_idx + 1})")
-            else:
-                print(f"  Memory cleanup performed (batch {batch_idx + 1})")
-            sys.stdout.flush()
         
-        # Print progress and batch completion
+        # Print progress - only every 10 batches or at important milestones
         batch_elapsed = time.time() - batch_start_time
         elapsed_total = time.time() - start_time
         progress = (batch_idx + 1) / num_batches * 100
         
-        if batch_idx > 0:
-            avg_time_per_batch = elapsed_total / (batch_idx + 1)
-            remaining_batches = num_batches - (batch_idx + 1)
-            eta_seconds = avg_time_per_batch * remaining_batches
-            eta_minutes = eta_seconds / 60
-            trajectories_per_sec = end_idx / elapsed_total if elapsed_total > 0 else 0
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f"Batch {batch_idx + 1}/{num_batches} completed in {batch_elapsed:.2f} seconds")
-            print(f"  Overall Progress: {progress:.1f}% | Time: {elapsed_total/60:.1f} min | ETA: {eta_minutes:.1f} min | Speed: {trajectories_per_sec:.0f} traj/sec | {current_time}")
-        else:
-            print(f"Batch {batch_idx + 1}/{num_batches} completed in {batch_elapsed:.2f} seconds")
+        # Print progress every 10 batches, or at 1%, 5%, 10%, 25%, 50%, 75%, 90%, 95%, 99%, 100%
+        should_print = (
+            (batch_idx + 1) % 10 == 0 or
+            batch_idx == 0 or
+            batch_idx == num_batches - 1 or
+            progress >= 99.0 or
+            (progress >= 1.0 and progress < 1.1) or
+            (progress >= 5.0 and progress < 5.1) or
+            (progress >= 10.0 and progress < 10.1) or
+            (progress >= 25.0 and progress < 25.1) or
+            (progress >= 50.0 and progress < 50.1) or
+            (progress >= 75.0 and progress < 75.1) or
+            (progress >= 90.0 and progress < 90.1) or
+            (progress >= 95.0 and progress < 95.1)
+        )
+        
+        if should_print:
+            if batch_idx > 0:
+                avg_time_per_batch = elapsed_total / (batch_idx + 1)
+                remaining_batches = num_batches - (batch_idx + 1)
+                eta_seconds = avg_time_per_batch * remaining_batches
+                eta_minutes = eta_seconds / 60
+                eta_hours = eta_minutes / 60
+                trajectories_per_sec = end_idx / elapsed_total if elapsed_total > 0 else 0
+                current_time = datetime.now().strftime('%H:%M:%S')
+                
+                if eta_hours >= 1:
+                    print(f"Progress: {progress:.1f}% ({batch_idx + 1}/{num_batches} batches) | "
+                          f"Time: {elapsed_total/60:.1f} min | ETA: {eta_hours:.1f} h | "
+                          f"Speed: {trajectories_per_sec:.0f} traj/sec | {current_time}")
+                else:
+                    print(f"Progress: {progress:.1f}% ({batch_idx + 1}/{num_batches} batches) | "
+                          f"Time: {elapsed_total/60:.1f} min | ETA: {eta_minutes:.1f} min | "
+                          f"Speed: {trajectories_per_sec:.0f} traj/sec | {current_time}")
+            else:
+                print(f"Starting simulation... Progress: {progress:.1f}% ({batch_idx + 1}/{num_batches} batches)")
+            sys.stdout.flush()
         
         if progress_log is not None:
             progress_log.append({
