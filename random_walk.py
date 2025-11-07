@@ -75,10 +75,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         if platform == 'local':
             batch_size = min(1000, M)
         else:
-            # On supercomputer, use medium batches for balance between speed and progress feedback
+            # On supercomputer, use smaller batches to prevent memory accumulation
             # Each element is 8 bytes, so: batch_size * N * 8 = memory
-            # For N=10000, 200K trajectories = 200000 * 10000 * 8 = 16GB (reasonable with optimizations)
-            batch_size = min(200000, M)  # 200K trajectories per batch = ~16GB for N=10000
+            # For N=10000, 100K trajectories = 100000 * 10000 * 8 = 8GB (safer for long runs)
+            batch_size = min(100000, M)  # 100K trajectories per batch = ~8GB for N=10000
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -136,6 +136,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         
         # Clean up random_values immediately after use
         del random_values, positive_steps
+        # Force immediate cleanup on supercomputer
+        if platform == 'supercomputer':
+            import gc
+            gc.collect()
         
         print(f"  Aggregating results...")
         sys.stdout.flush()
@@ -173,11 +177,19 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         print(f"  Results aggregated in {agg_time:.2f} seconds")
         sys.stdout.flush()
         
-        # Force garbage collection every 5 batches to prevent memory buildup
-        if (batch_idx + 1) % 5 == 0:
+        # Additional cleanup on supercomputer after aggregation
+        if platform == 'supercomputer':
             import gc
             gc.collect()
-            print(f"  Memory cleanup performed (batch {batch_idx + 1})")
+        
+        # Force garbage collection every batch on supercomputer, every 5 on local
+        if platform == 'supercomputer' or (batch_idx + 1) % 5 == 0:
+            import gc
+            gc.collect()
+            if platform == 'supercomputer':
+                print(f"  Memory cleanup performed (batch {batch_idx + 1})")
+            else:
+                print(f"  Memory cleanup performed (batch {batch_idx + 1})")
             sys.stdout.flush()
         
         # Print progress and batch completion
@@ -401,7 +413,7 @@ def main():
                 if platform == 'local':
                     actual_batch_size = min(1000, M)
                 else:
-                    actual_batch_size = min(200000, M)
+                    actual_batch_size = min(100000, M)
             else:
                 actual_batch_size = batch_size
             required_memory = actual_batch_size * N * 8 / 1024**3
@@ -415,7 +427,7 @@ def main():
                         max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
                         batch_size = max(100, min(1000, max_batch_size))
                     else:
-                        batch_size = min(200000, M)
+                        batch_size = min(100000, M)
                     print(f"Automatically set batch size: {batch_size:,} trajectories")
         except ImportError:
             pass
