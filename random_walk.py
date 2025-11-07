@@ -112,70 +112,122 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         print(f"Starting batch {batch_idx + 1}/{num_batches} (trajectories {start_idx:,} to {end_idx:,})...")
         sys.stdout.flush()
         
-        # Generate random values and compute steps
-        print(f"  Generating random numbers for {current_batch_size:,} trajectories...")
-        sys.stdout.flush()
-        gen_start = time.time()
-        random_values = np.random.random((current_batch_size, N))
-        gen_time = time.time() - gen_start
-        print(f"  Random generation completed in {gen_time:.2f} seconds")
-        sys.stdout.flush()
+        # On supercomputer, process in chunks to avoid memory issues
+        if platform == 'supercomputer' and current_batch_size > 50000:
+            chunk_size = 50000
+            num_chunks = (current_batch_size + chunk_size - 1) // chunk_size
+            batch_positions_list = []
+            
+            for chunk_idx in range(num_chunks):
+                chunk_start = chunk_idx * chunk_size
+                chunk_end = min(chunk_start + chunk_size, current_batch_size)
+                chunk_size_actual = chunk_end - chunk_start
+                
+                print(f"  Processing chunk {chunk_idx + 1}/{num_chunks} ({chunk_start:,} to {chunk_end:,})...")
+                sys.stdout.flush()
+                
+                # Generate random numbers for this chunk
+                chunk_random = np.random.random((chunk_size_actual, N))
+                
+                # Compute positions for this chunk
+                chunk_positive = np.sum(chunk_random > 0.5, axis=1, dtype=np.int32)
+                chunk_positions = (chunk_positive * 2 - N).astype(np.int32)
+                
+                # Aggregate immediately
+                sum_positions += np.sum(chunk_positions, dtype=np.float64)
+                chunk_squared = np.sum(chunk_positions.astype(np.int64) ** 2, dtype=np.float64)
+                sum_squared_positions += chunk_squared
+                
+                # Sample for std
+                if std_sample_count < max_std_sample:
+                    remaining_slots = max_std_sample - std_sample_count
+                    sample_size = min(10, len(chunk_positions), remaining_slots)
+                    if sample_size > 0:
+                        indices = np.random.choice(len(chunk_positions), sample_size, replace=False)
+                        end_idx = std_sample_count + sample_size
+                        sum_positions_for_std[std_sample_count:end_idx] = chunk_positions[indices].astype(np.int32)
+                        std_sample_count = end_idx
+                
+                # Update min/max
+                chunk_min = int(np.min(chunk_positions))
+                chunk_max = int(np.max(chunk_positions))
+                if chunk_min < min_position:
+                    min_position = chunk_min
+                if chunk_max > max_position:
+                    max_position = chunk_max
+                
+                # Store for final aggregation (if needed)
+                batch_positions_list.append(chunk_positions)
+                
+                # Cleanup chunk immediately
+                del chunk_random, chunk_positive, chunk_positions, chunk_squared
+                import gc
+                gc.collect()
+            
+            # Combine for final batch_positions (only if needed for progress)
+            batch_positions = np.concatenate(batch_positions_list)
+            del batch_positions_list
+            
+        else:
+            # Standard processing for local or small batches
+            print(f"  Generating random numbers for {current_batch_size:,} trajectories...")
+            sys.stdout.flush()
+            gen_start = time.time()
+            random_values = np.random.random((current_batch_size, N))
+            gen_time = time.time() - gen_start
+            print(f"  Random generation completed in {gen_time:.2f} seconds")
+            sys.stdout.flush()
+            
+            print(f"  Computing positions (memory-efficient method)...")
+            sys.stdout.flush()
+            pos_start = time.time()
+            positive_steps = np.sum(random_values > 0.5, axis=1, dtype=np.int32)
+            batch_positions = (positive_steps * 2 - N).astype(np.int32)
+            pos_time = time.time() - pos_start
+            print(f"  Positions computed in {pos_time:.2f} seconds")
+            sys.stdout.flush()
+            
+            del random_values, positive_steps
+            
+            print(f"  Aggregating results...")
+            sys.stdout.flush()
+            agg_start = time.time()
+            
+            sum_positions += np.sum(batch_positions, dtype=np.float64)
+            batch_squared = np.sum(batch_positions.astype(np.int64) ** 2, dtype=np.float64)
+            sum_squared_positions += batch_squared
+            del batch_squared
+            
+            # Sample positions efficiently with fixed-size array
+            if std_sample_count < max_std_sample:
+                remaining_slots = max_std_sample - std_sample_count
+                sample_size = min(50, len(batch_positions), remaining_slots)
+                if sample_size > 0:
+                    indices = np.random.choice(len(batch_positions), sample_size, replace=False)
+                    end_idx = std_sample_count + sample_size
+                    sum_positions_for_std[std_sample_count:end_idx] = batch_positions[indices].astype(np.int32)
+                    std_sample_count = end_idx
+                    del indices
+            
+            # Find min/max
+            batch_min = int(np.min(batch_positions))
+            batch_max = int(np.max(batch_positions))
+            if batch_min < min_position:
+                min_position = batch_min
+            if batch_max > max_position:
+                max_position = batch_max
+            
+            agg_time = time.time() - agg_start
+            print(f"  Results aggregated in {agg_time:.2f} seconds")
+            sys.stdout.flush()
         
-        print(f"  Computing positions (memory-efficient method)...")
-        sys.stdout.flush()
-        pos_start = time.time()
-        # Memory-efficient: compute positions without creating large intermediate arrays
-        # Position = sum(steps) where step = +1 if random > 0.5, else -1
-        # This equals: 2 * count(random > 0.5) - N
-        # We compute count directly and multiply, avoiding intermediate arrays
-        positive_steps = np.sum(random_values > 0.5, axis=1, dtype=np.int32)
-        batch_positions = (positive_steps * 2 - N).astype(np.int32)
-        pos_time = time.time() - pos_start
-        print(f"  Positions computed in {pos_time:.2f} seconds")
-        sys.stdout.flush()
-        
-        # Clean up random_values immediately after use
-        del random_values, positive_steps
-        # Force immediate cleanup on supercomputer
-        if platform == 'supercomputer':
-            import gc
-            gc.collect()
-        
-        print(f"  Aggregating results...")
-        sys.stdout.flush()
-        agg_start = time.time()
-        
-        # Use efficient accumulation without creating large intermediate arrays
-        # Compute sums directly without creating intermediate arrays
-        sum_positions += np.sum(batch_positions, dtype=np.float64)
-        # Compute squared sum more efficiently
-        batch_squared = np.sum(batch_positions.astype(np.int64) ** 2, dtype=np.float64)
-        sum_squared_positions += batch_squared
-        del batch_squared  # Free memory immediately
-        
-        # Sample positions efficiently with fixed-size array
-        if std_sample_count < max_std_sample:
-            remaining_slots = max_std_sample - std_sample_count
-            sample_size = min(50, len(batch_positions), remaining_slots)
-            if sample_size > 0:
-                indices = np.random.choice(len(batch_positions), sample_size, replace=False)
-                end_idx = std_sample_count + sample_size
-                sum_positions_for_std[std_sample_count:end_idx] = batch_positions[indices].astype(np.int32)
-                std_sample_count = end_idx
-                del indices
-        
-        # Find min/max more efficiently
-        batch_min = int(np.min(batch_positions))
-        batch_max = int(np.max(batch_positions))
-        if batch_min < min_position:
-            min_position = batch_min
-        if batch_max > max_position:
-            max_position = batch_max
-        
-        del batch_positions
-        agg_time = time.time() - agg_start
-        print(f"  Results aggregated in {agg_time:.2f} seconds")
-        sys.stdout.flush()
+        # For supercomputer chunks, aggregation already done, just cleanup
+        if platform == 'supercomputer' and current_batch_size > 50000:
+            del batch_positions
+            print(f"  All chunks processed and aggregated")
+            sys.stdout.flush()
+        else:
+            del batch_positions
         
         # Additional cleanup on supercomputer after aggregation
         if platform == 'supercomputer':
