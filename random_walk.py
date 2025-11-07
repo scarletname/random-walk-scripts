@@ -75,12 +75,13 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         if platform == 'local':
             batch_size = min(1000, M)
         else:
-            # On supercomputer, use larger batches but still reasonable size
+            # On supercomputer, use smaller batches for better progress feedback
             # Calculate maximum batch size based on available memory (assume 50GB available)
             # Each element is 8 bytes, so: batch_size * N * 8 < 50GB
             max_memory_gb = 50.0  # Conservative estimate for available memory
             max_batch_size = int(max_memory_gb * 1024**3 / (N * 8))
-            batch_size = min(max_batch_size, M, 10000000)  # Max 10M trajectories per batch
+            # Use smaller batches (1M) to show progress more frequently
+            batch_size = min(max_batch_size, M, 1000000)  # Max 1M trajectories per batch
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -98,13 +99,29 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
     print(f"Processing {num_batches:,} batches...")
     print("This may take significant time on local machine.")
     
+    last_progress_time = start_time
+    progress_time_interval = 10.0  # Print progress every 10 seconds
+    
     for batch_idx in range(num_batches):
+        batch_start_time = time.time()
         start_idx = batch_idx * batch_size
         end_idx = min(start_idx + batch_size, M)
         current_batch_size = end_idx - start_idx
         
+        # Print batch start message
+        print(f"Starting batch {batch_idx + 1}/{num_batches} (trajectories {start_idx:,} to {end_idx:,})...")
+        sys.stdout.flush()
+        
         progress_interval = max(1, min(num_batches // 100, 100))
-        if (batch_idx + 1) % progress_interval == 0 or batch_idx == num_batches - 1:
+        current_time_check = time.time()
+        should_print_progress = (
+            (batch_idx + 1) % progress_interval == 0 or 
+            batch_idx == num_batches - 1 or
+            (current_time_check - last_progress_time) >= progress_time_interval or
+            batch_idx == 0
+        )
+        
+        if should_print_progress:
             progress = (batch_idx + 1) / num_batches * 100
             elapsed = time.time() - start_time
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -133,10 +150,14 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             else:
                 print(f"  Progress: {progress:.1f}% ({batch_idx + 1:,}/{num_batches:,} batches) | "
                       f"Time: {current_time}")
+            sys.stdout.flush()
+            last_progress_time = current_time_check
         
+        # Generate random values and compute steps
         random_values = np.random.random((current_batch_size, N))
         steps = np.where(random_values > 0.5, 1, -1)
         
+        # Compute positions for this batch
         batch_positions = np.sum(steps, axis=1)
         
         sum_positions += np.sum(batch_positions)
@@ -156,6 +177,11 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             max_position = batch_max
         
         del steps, random_values, batch_positions
+        
+        # Print batch completion message
+        batch_elapsed = time.time() - batch_start_time
+        print(f"Batch {batch_idx + 1}/{num_batches} completed in {batch_elapsed:.2f} seconds")
+        sys.stdout.flush()
     
     mean_position = sum_positions / M
     mean_squared_displacement = sum_squared_positions / M
@@ -337,7 +363,7 @@ def main():
                 else:
                     max_memory_gb = 50.0
                     max_batch_size = int(max_memory_gb * 1024**3 / (N * 8))
-                    actual_batch_size = min(max_batch_size, M, 10000000)
+                    actual_batch_size = min(max_batch_size, M, 1000000)
             else:
                 actual_batch_size = batch_size
             required_memory = actual_batch_size * N * 8 / 1024**3
@@ -352,7 +378,7 @@ def main():
                         batch_size = max(100, min(1000, max_batch_size))
                     else:
                         max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
-                        batch_size = min(max_batch_size, M, 10000000)
+                        batch_size = min(max_batch_size, M, 1000000)
                     print(f"Automatically set batch size: {batch_size:,} trajectories")
         except ImportError:
             pass
