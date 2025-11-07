@@ -87,7 +87,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
     
     sum_positions = 0.0
     sum_squared_positions = 0.0
-    sum_positions_for_std = []
+    # Use numpy array with fixed size instead of list to prevent memory growth
+    max_std_sample = 10000  # Fixed sample size for std calculation
+    sum_positions_for_std = np.zeros(max_std_sample, dtype=np.int32)
+    std_sample_count = 0
     min_position = float('inf')
     max_position = float('-inf')
     
@@ -139,15 +142,23 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         agg_start = time.time()
         
         # Use efficient accumulation without creating large intermediate arrays
-        sum_positions += float(np.sum(batch_positions))
-        sum_squared_positions += float(np.sum(batch_positions.astype(np.int64) ** 2))
+        # Compute sums directly without creating intermediate arrays
+        sum_positions += np.sum(batch_positions, dtype=np.float64)
+        # Compute squared sum more efficiently
+        batch_squared = np.sum(batch_positions.astype(np.int64) ** 2, dtype=np.float64)
+        sum_squared_positions += batch_squared
+        del batch_squared  # Free memory immediately
         
-        # Sample positions more efficiently - only keep limited sample
-        if len(sum_positions_for_std) < 50000:  # Reduced from 100000
-            sample_size = min(50, len(batch_positions))  # Reduced from 100
+        # Sample positions efficiently with fixed-size array
+        if std_sample_count < max_std_sample:
+            remaining_slots = max_std_sample - std_sample_count
+            sample_size = min(50, len(batch_positions), remaining_slots)
             if sample_size > 0:
                 indices = np.random.choice(len(batch_positions), sample_size, replace=False)
-                sum_positions_for_std.extend(batch_positions[indices].astype(np.int32).tolist())
+                end_idx = std_sample_count + sample_size
+                sum_positions_for_std[std_sample_count:end_idx] = batch_positions[indices].astype(np.int32)
+                std_sample_count = end_idx
+                del indices
         
         # Find min/max more efficiently
         batch_min = int(np.min(batch_positions))
@@ -162,8 +173,8 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         print(f"  Results aggregated in {agg_time:.2f} seconds")
         sys.stdout.flush()
         
-        # Force garbage collection every 10 batches to prevent memory buildup
-        if (batch_idx + 1) % 10 == 0:
+        # Force garbage collection every 5 batches to prevent memory buildup
+        if (batch_idx + 1) % 5 == 0:
             import gc
             gc.collect()
             print(f"  Memory cleanup performed (batch {batch_idx + 1})")
@@ -204,8 +215,9 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
     mean_position = sum_positions / M
     mean_squared_displacement = sum_squared_positions / M
     
-    if sum_positions_for_std:
-        std_position = np.std(sum_positions_for_std)
+    # Calculate std from fixed-size sample
+    if std_sample_count > 0:
+        std_position = float(np.std(sum_positions_for_std[:std_sample_count]))
     else:
         std_position = np.sqrt(N)
     
@@ -214,7 +226,17 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
     
     trajectories_per_second = M / elapsed_time if elapsed_time > 0 else 0
     
-    final_positions_sample = np.array(sum_positions_for_std[:10000]) if sum_positions_for_std else None
+    # Create final sample from fixed-size array
+    if std_sample_count > 0:
+        sample_size = min(10000, std_sample_count)
+        final_positions_sample = sum_positions_for_std[:sample_size].copy()
+    else:
+        final_positions_sample = None
+    
+    # Clean up memory
+    del sum_positions_for_std
+    import gc
+    gc.collect()
     
     results = {
         'N': N,
