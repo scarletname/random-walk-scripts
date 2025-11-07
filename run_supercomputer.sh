@@ -3,7 +3,7 @@
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH -p tornado
-#SBATCH -t 08:00:00
+#SBATCH -t 04:00:00
 #SBATCH -J random_walk
 #SBATCH -o random_walk-%j.out
 #SBATCH -e random_walk-%j.err
