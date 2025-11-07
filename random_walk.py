@@ -75,11 +75,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         if platform == 'local':
             batch_size = min(1000, M)
         else:
-            # On supercomputer, use smaller batches for better progress feedback
-            # Use even smaller batches (50K) to process faster and show frequent progress
+            # On supercomputer, use medium batches for balance between speed and progress feedback
             # Each element is 8 bytes, so: batch_size * N * 8 = memory
-            # For N=10000, 50K trajectories = 50000 * 10000 * 8 = 4GB (more reasonable)
-            batch_size = min(50000, M)  # 50K trajectories per batch = ~4GB for N=10000
+            # For N=10000, 200K trajectories = 200000 * 10000 * 8 = 16GB (reasonable with optimizations)
+            batch_size = min(200000, M)  # 200K trajectories per batch = ~16GB for N=10000
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -119,20 +118,21 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         print(f"  Random generation completed in {gen_time:.2f} seconds")
         sys.stdout.flush()
         
-        print(f"  Computing positions (optimized, no intermediate array)...")
+        print(f"  Computing positions (memory-efficient method)...")
         sys.stdout.flush()
         pos_start = time.time()
-        # Optimized: compute positions directly without creating steps array
-        # For each trajectory: sum of steps where step = +1 if random > 0.5, else -1
-        # This is equivalent to: sum(2 * (random > 0.5) - 1) = 2 * sum(random > 0.5) - N
-        # But we can compute it more efficiently:
-        batch_positions = np.sum(2 * (random_values > 0.5) - 1, axis=1).astype(np.int32)
+        # Memory-efficient: compute positions without creating large intermediate arrays
+        # Position = sum(steps) where step = +1 if random > 0.5, else -1
+        # This equals: 2 * count(random > 0.5) - N
+        # We compute count directly and multiply, avoiding intermediate arrays
+        positive_steps = np.sum(random_values > 0.5, axis=1, dtype=np.int32)
+        batch_positions = (positive_steps * 2 - N).astype(np.int32)
         pos_time = time.time() - pos_start
         print(f"  Positions computed in {pos_time:.2f} seconds")
         sys.stdout.flush()
         
         # Clean up random_values immediately after use
-        del random_values
+        del random_values, positive_steps
         
         print(f"  Aggregating results...")
         sys.stdout.flush()
@@ -366,7 +366,7 @@ def main():
                 if platform == 'local':
                     actual_batch_size = min(1000, M)
                 else:
-                    actual_batch_size = min(50000, M)
+                    actual_batch_size = min(200000, M)
             else:
                 actual_batch_size = batch_size
             required_memory = actual_batch_size * N * 8 / 1024**3
@@ -380,7 +380,7 @@ def main():
                         max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
                         batch_size = max(100, min(1000, max_batch_size))
                     else:
-                        batch_size = min(50000, M)
+                        batch_size = min(200000, M)
                     print(f"Automatically set batch size: {batch_size:,} trajectories")
         except ImportError:
             pass
