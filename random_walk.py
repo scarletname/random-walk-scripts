@@ -76,10 +76,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             batch_size = min(1000, M)
         else:
             # On supercomputer, use smaller batches for better progress feedback
-            # Use much smaller batches (100K) to process faster and show frequent progress
+            # Use even smaller batches (50K) to process faster and show frequent progress
             # Each element is 8 bytes, so: batch_size * N * 8 = memory
-            # For N=10000, 100K trajectories = 100000 * 10000 * 8 = 8GB (reasonable)
-            batch_size = min(100000, M)  # 100K trajectories per batch = ~8GB for N=10000
+            # For N=10000, 50K trajectories = 50000 * 10000 * 8 = 4GB (more reasonable)
+            batch_size = min(50000, M)  # 50K trajectories per batch = ~4GB for N=10000
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -119,32 +119,42 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         print(f"  Random generation completed in {gen_time:.2f} seconds")
         sys.stdout.flush()
         
-        print(f"  Computing steps...")
+        print(f"  Computing positions (optimized, no intermediate array)...")
         sys.stdout.flush()
-        steps = np.where(random_values > 0.5, 1, -1)
-        
-        print(f"  Computing positions...")
+        pos_start = time.time()
+        # Optimized: compute positions directly without creating steps array
+        # For each trajectory: sum of steps where step = +1 if random > 0.5, else -1
+        # This is equivalent to: sum(2 * (random > 0.5) - 1) = 2 * sum(random > 0.5) - N
+        # But we can compute it more efficiently:
+        batch_positions = np.sum(2 * (random_values > 0.5) - 1, axis=1).astype(np.int32)
+        pos_time = time.time() - pos_start
+        print(f"  Positions computed in {pos_time:.2f} seconds")
         sys.stdout.flush()
-        # Compute positions for this batch
-        batch_positions = np.sum(steps, axis=1)
         
+        # Clean up random_values immediately after use
+        del random_values
+        
+        print(f"  Aggregating results...")
+        sys.stdout.flush()
         sum_positions += np.sum(batch_positions)
-        sum_squared_positions += np.sum(batch_positions ** 2)
+        sum_squared_positions += np.sum(batch_positions.astype(np.int64) ** 2)
         
         if len(sum_positions_for_std) < 100000:
             sample_size = min(100, len(batch_positions))
             if sample_size > 0:
                 indices = np.random.choice(len(batch_positions), sample_size, replace=False)
-                sum_positions_for_std.extend(batch_positions[indices])
+                sum_positions_for_std.extend(batch_positions[indices].tolist())
         
-        batch_min = np.min(batch_positions)
-        batch_max = np.max(batch_positions)
+        batch_min = int(np.min(batch_positions))
+        batch_max = int(np.max(batch_positions))
         if batch_min < min_position:
             min_position = batch_min
         if batch_max > max_position:
             max_position = batch_max
         
-        del steps, random_values, batch_positions
+        del batch_positions
+        print(f"  Results aggregated")
+        sys.stdout.flush()
         
         # Print progress and batch completion
         batch_elapsed = time.time() - batch_start_time
@@ -356,7 +366,7 @@ def main():
                 if platform == 'local':
                     actual_batch_size = min(1000, M)
                 else:
-                    actual_batch_size = min(100000, M)
+                    actual_batch_size = min(50000, M)
             else:
                 actual_batch_size = batch_size
             required_memory = actual_batch_size * N * 8 / 1024**3
@@ -370,7 +380,7 @@ def main():
                         max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
                         batch_size = max(100, min(1000, max_batch_size))
                     else:
-                        batch_size = min(100000, M)
+                        batch_size = min(50000, M)
                     print(f"Automatically set batch size: {batch_size:,} trajectories")
         except ImportError:
             pass
