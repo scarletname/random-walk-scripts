@@ -10,6 +10,11 @@ import json
 import sys
 from pathlib import Path
 from datetime import datetime
+import re
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 
 class TeeOutput:
@@ -77,8 +82,8 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         else:
             # On supercomputer, use optimized batch size for speed and stability
             # Each element is 8 bytes, so: batch_size * N * 8 = memory
-            # For N=10000, 200K trajectories = 200000 * 10000 * 8 = 16GB (optimized for speed)
-            batch_size = min(200000, M)  # 200K trajectories per batch = ~16GB for N=10000
+            # For N=10000, 500K trajectories = 500000 * 10000 * 8 = 40GB (optimized for speed)
+            batch_size = min(500000, M)  # 500K trajectories per batch = ~40GB for N=10000
     
     print(f"Batch size: {batch_size:,} trajectories")
     print(f"Expected memory usage: ~{batch_size * N * 8 / 1024**3:.3f} GB per batch")
@@ -112,7 +117,6 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         if platform == 'supercomputer' and current_batch_size > 50000:
             chunk_size = 50000
             num_chunks = (current_batch_size + chunk_size - 1) // chunk_size
-            batch_positions_list = []
             
             for chunk_idx in range(num_chunks):
                 chunk_start = chunk_idx * chunk_size
@@ -131,10 +135,10 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
                 chunk_squared = np.sum(chunk_positions.astype(np.int64) ** 2, dtype=np.float64)
                 sum_squared_positions += chunk_squared
                 
-                # Sample for std
+                # Sample for std and visualization (collect more samples)
                 if std_sample_count < max_std_sample:
                     remaining_slots = max_std_sample - std_sample_count
-                    sample_size = min(10, len(chunk_positions), remaining_slots)
+                    sample_size = min(50, len(chunk_positions), remaining_slots)
                     if sample_size > 0:
                         indices = np.random.choice(len(chunk_positions), sample_size, replace=False)
                         end_idx = std_sample_count + sample_size
@@ -149,17 +153,9 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
                 if chunk_max > max_position:
                     max_position = chunk_max
                 
-                # Store for final aggregation (if needed)
-                batch_positions_list.append(chunk_positions)
-                
-                # Cleanup chunk immediately
+                # Cleanup chunk immediately (no need to store - already aggregated)
                 del chunk_random, chunk_positive, chunk_positions, chunk_squared
-                import gc
                 gc.collect()
-            
-            # Combine for final batch_positions (only if needed for progress)
-            batch_positions = np.concatenate(batch_positions_list)
-            del batch_positions_list
             
         else:
             # Standard processing for local or small batches
@@ -192,10 +188,6 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             if batch_max > max_position:
                 max_position = batch_max
             
-            del batch_positions
-        
-        # For supercomputer chunks, aggregation already done, just cleanup
-        if platform == 'supercomputer' and current_batch_size > 50000:
             del batch_positions
         
         # Additional cleanup on supercomputer after aggregation
@@ -413,6 +405,441 @@ def save_sample_positions(final_positions, N, M, output_dir='results', sample_si
     return output_file
 
 
+def load_results(results_dir='results'):
+    """
+    Load simulation results from JSON files.
+    
+    Parameters
+    ----------
+    results_dir : str
+        Directory with results files.
+    
+    Returns
+    -------
+    dict
+        Dictionary with results grouped by platform.
+    """
+    results_files = sorted(Path(results_dir).glob('results_*.json'))
+    
+    if not results_files:
+        print(f"No result files found in directory {results_dir}")
+        return {'local': None, 'supercomputer': None, 'all': []}
+    
+    results = {'all': []}
+    for file in results_files:
+        with open(file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            results['all'].append(data)
+            platform = data.get('platform', 'unknown')
+            if platform in ['local', 'supercomputer']:
+                results[platform] = data
+    
+    return results
+
+
+def load_sample_positions(results_dir='results'):
+    """
+    Load position samples from numpy files.
+    
+    Parameters
+    ----------
+    results_dir : str
+        Directory with results files.
+    
+    Returns
+    -------
+    dict
+        Mapping from file name to numpy array with positions.
+    """
+    position_files = sorted(Path(results_dir).glob('positions_sample_*.npy'))
+    
+    positions = {}
+    for file in position_files:
+        positions[file.name] = np.load(file)
+    
+    return positions
+
+
+def plot_statistics_comparison(results, output_dir='results'):
+    """
+    Plot comparison between calculated and theoretical statistics.
+    
+    Parameters
+    ----------
+    results : list
+        List with result dictionaries.
+    output_dir : str
+        Directory for saving figures.
+    """
+    if not results:
+        print("No data available for statistics plot.")
+        return
+    
+    result = results[0]
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig.suptitle('Random Walk Statistical Characteristics', fontsize=16, fontweight='bold')
+    
+    # Mean comparison
+    ax1 = axes[0]
+    categories = [
+        'Mean Position (Theory)',
+        'Mean Position (Measured)',
+        'MSD (Theory)',
+        'MSD (Measured)'
+    ]
+    values = [
+        0,
+        result['mean_position'],
+        result['theoretical_mean_squared_displacement'],
+        result['mean_squared_displacement']
+    ]
+    colors = ['blue', 'red', 'blue', 'red']
+    
+    bars = ax1.bar(categories, values, color=colors, alpha=0.7, edgecolor='black')
+    ax1.set_ylabel('Value')
+    ax1.set_title('Theoretical vs Measured')
+    ax1.grid(True, alpha=0.3)
+    
+    for bar, val in zip(bars, values):
+        height = bar.get_height()
+        ax1.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height,
+            f"{val:.2f}",
+            ha='center',
+            va='bottom',
+            fontweight='bold'
+        )
+    
+    # Error comparison
+    ax2 = axes[1]
+    error_types = ['Mean Position Error', 'Relative MSD Error (%)']
+    error_values = [result['error_mean_position'], result['relative_error_msd']]
+    bars2 = ax2.bar(error_types, error_values, color=['orange', 'green'], alpha=0.7, edgecolor='black')
+    ax2.set_ylabel('Error Value')
+    ax2.set_title('Calculation Error')
+    ax2.grid(True, alpha=0.3)
+    
+    for bar, val in zip(bars2, error_values):
+        height = bar.get_height()
+        ax2.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height,
+            f"{val:.4f}",
+            ha='center',
+            va='bottom',
+            fontweight='bold'
+        )
+    
+    # Detailed info
+    ax3 = axes[2]
+    ax3.axis('off')
+    info_text = (
+        "Simulation Parameters:\n"
+        "------------------------------\n"
+        f"N (steps): {result['N']:,}\n"
+        f"M (trajectories): {result['M']:,}\n\n"
+        "Results:\n"
+        "------------------------------\n"
+        f"Mean Position: {result['mean_position']:.6f}\n"
+        f"Theoretical Mean: {result['theoretical_mean_position']:.2f}\n\n"
+        f"Mean Squared Displacement: {result['mean_squared_displacement']:.2f}\n"
+        f"Theoretical MSD: {result['theoretical_mean_squared_displacement']:.2f}\n\n"
+        "Statistics:\n"
+        "------------------------------\n"
+        f"Standard Deviation: {result['std_position']:.2f}\n"
+        f"Min Position: {result['min_position']}\n"
+        f"Max Position: {result['max_position']}\n\n"
+        "Performance:\n"
+        "------------------------------\n"
+        f"Execution Time: {result['elapsed_time_seconds']:.2f} sec\n"
+        f"({result['elapsed_time_minutes']:.2f} minutes)\n"
+    )
+    ax3.text(
+        0.1,
+        0.5,
+        info_text,
+        fontsize=11,
+        family='monospace',
+        verticalalignment='center',
+        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    )
+    
+    plt.tight_layout()
+    
+    output_file = Path(output_dir) / 'statistics_comparison.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"Statistics plot saved: {output_file}")
+    plt.close()
+
+
+def plot_position_distribution(positions_dict, output_dir='results'):
+    """
+    Plot distribution of final positions.
+    
+    Parameters
+    ----------
+    positions_dict : dict
+        Mapping from file name to positions array.
+    output_dir : str
+        Directory for saving figures.
+    """
+    if not positions_dict:
+        print("No position data available for histogram.")
+        return
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle('Final Position Distribution', fontsize=16, fontweight='bold')
+    
+    file_name, positions = next(iter(positions_dict.items()))
+    
+    match = re.search(r'N(\d+)_M', file_name)
+    if match:
+        N = int(match.group(1))
+    else:
+        N = 10 ** 4
+    
+    # Histogram
+    ax1 = axes[0]
+    n_bins = min(100, max(10, int(np.sqrt(len(positions)))))
+    counts, bins, patches = ax1.hist(
+        positions,
+        bins=n_bins,
+        edgecolor='black',
+        alpha=0.7,
+        color='skyblue'
+    )
+    ax1.set_xlabel('Final Position')
+    ax1.set_ylabel('Frequency')
+    ax1.set_title('Histogram')
+    ax1.grid(True, alpha=0.3)
+    
+    mean_pos = np.mean(positions)
+    ax1.axvline(mean_pos, color='red', linestyle='--', linewidth=2, label=f"Mean: {mean_pos:.2f}")
+    ax1.axvline(0, color='green', linestyle='--', linewidth=2, label='Theoretical Mean: 0')
+    ax1.legend()
+    
+    # Normalized histogram with theoretical curve
+    ax2 = axes[1]
+    sigma_theoretical = np.sqrt(N)
+    
+    counts_norm, bins_norm, patches_norm = ax2.hist(
+        positions,
+        bins=n_bins,
+        density=True,
+        edgecolor='black',
+        alpha=0.7,
+        color='lightcoral',
+        label='Experimental'
+    )
+    
+    x_theoretical = np.linspace(bins_norm[0], bins_norm[-1], 1000)
+    y_theoretical = (1 / (sigma_theoretical * np.sqrt(2 * np.pi))) * np.exp(
+        -0.5 * (x_theoretical / sigma_theoretical) ** 2
+    )
+    ax2.plot(x_theoretical, y_theoretical, 'b-', linewidth=2, label='Theory (N(0, N))')
+    
+    ax2.set_xlabel('Final Position')
+    ax2.set_ylabel('Probability Density')
+    ax2.set_title('Histogram vs Theoretical Normal Distribution')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    plt.tight_layout()
+    
+    output_file = Path(output_dir) / 'position_distribution.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"Distribution plot saved: {output_file}")
+    plt.close()
+
+
+def create_comparison_report(results_local=None, results_supercomputer=None, output_dir='results'):
+    """
+    Create comparison report between local and supercomputer executions.
+    
+    Parameters
+    ----------
+    results_local : dict or None
+        Results from local execution.
+    results_supercomputer : dict or None
+        Results from supercomputer execution.
+    output_dir : str
+        Directory for saving figures.
+    """
+    if not results_local and not results_supercomputer:
+        print("No execution results available for comparison.")
+        return
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Local vs Supercomputer Comparison', fontsize=16, fontweight='bold')
+    
+    if results_local and results_supercomputer:
+        # Execution time
+        ax1 = axes[0, 0]
+        platforms = ['Local Machine', 'Supercomputer']
+        times = [
+            results_local['elapsed_time_seconds'],
+            results_supercomputer['elapsed_time_seconds']
+        ]
+        bars = ax1.bar(platforms, times, color=['blue', 'red'], alpha=0.7, edgecolor='black')
+        ax1.set_ylabel('Time (seconds)')
+        ax1.set_title('Execution Time')
+        ax1.grid(True, alpha=0.3)
+        for bar, val in zip(bars, times):
+            height = bar.get_height()
+            ax1.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{val:.2f} sec",
+                ha='center',
+                va='bottom',
+                fontweight='bold'
+            )
+        
+        speedup = results_local['elapsed_time_seconds'] / results_supercomputer['elapsed_time_seconds']
+        ax1.text(
+            0.5,
+            max(times) * 0.9,
+            f"Speedup: {speedup:.2f}x",
+            ha='center',
+            fontsize=12,
+            fontweight='bold',
+            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7)
+        )
+        
+        # Mean positions
+        ax2 = axes[0, 1]
+        mean_positions = [
+            results_local['mean_position'],
+            results_supercomputer['mean_position']
+        ]
+        bars2 = ax2.bar(platforms, mean_positions, color=['blue', 'red'], alpha=0.7, edgecolor='black')
+        ax2.axhline(0, color='green', linestyle='--', linewidth=2, label='Theoretical Mean: 0')
+        ax2.set_ylabel('Mean Position')
+        ax2.set_title('Mean Position')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # MSD
+        ax3 = axes[1, 0]
+        msd_values = [
+            results_local['mean_squared_displacement'],
+            results_supercomputer['mean_squared_displacement']
+        ]
+        theoretical_msd = results_local['theoretical_mean_squared_displacement']
+        bars3 = ax3.bar(platforms, msd_values, color=['blue', 'red'], alpha=0.7, edgecolor='black')
+        ax3.axhline(
+            theoretical_msd,
+            color='green',
+            linestyle='--',
+            linewidth=2,
+            label=f"Theoretical MSD: {theoretical_msd:.0f}"
+        )
+        ax3.set_ylabel('Mean Squared Displacement')
+        ax3.set_title('Mean Squared Displacement')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Errors
+        ax4 = axes[1, 1]
+        error_types = [
+            'Mean Error (Local)',
+            'Mean Error (Supercomputer)',
+            'MSD Error (Local, %)',
+            'MSD Error (Supercomputer, %)'
+        ]
+        error_values = [
+            results_local['error_mean_position'],
+            results_supercomputer['error_mean_position'],
+            results_local['relative_error_msd'],
+            results_supercomputer['relative_error_msd']
+        ]
+        bars4 = ax4.bar(
+            error_types,
+            error_values,
+            color=['lightblue', 'lightcoral', 'lightblue', 'lightcoral'],
+            alpha=0.7,
+            edgecolor='black'
+        )
+        ax4.set_ylabel('Error Value')
+        ax4.set_title('Accuracy Comparison')
+        ax4.grid(True, alpha=0.3)
+        plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    else:
+        ax1 = axes[0, 0]
+        ax1.text(
+            0.5,
+            0.5,
+            'Only local data is available.\nSubmit supercomputer results to compare.',
+            ha='center',
+            va='center',
+            fontsize=14,
+            transform=ax1.transAxes
+        )
+        ax1.axis('off')
+        
+        ax2 = axes[0, 1]
+        info_text = (
+            "Local Results:\n"
+            "------------------------------\n"
+            f"N: {results_local['N']:,}\n"
+            f"M: {results_local['M']:,}\n"
+            f"Time: {results_local['elapsed_time_seconds']:.2f} sec\n"
+            f"Mean Position: {results_local['mean_position']:.6f}\n"
+            f"MSD: {results_local['mean_squared_displacement']:.2f}\n"
+        )
+        ax2.text(
+            0.1,
+            0.5,
+            info_text,
+            fontsize=12,
+            family='monospace',
+            verticalalignment='center',
+            transform=ax2.transAxes
+        )
+        ax2.axis('off')
+        
+        axes[1, 0].axis('off')
+        axes[1, 1].axis('off')
+    
+    plt.tight_layout()
+    
+    output_file = Path(output_dir) / 'comparison_report.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"Comparison report saved: {output_file}")
+    plt.close()
+
+
+def generate_visualizations(results_dir='results'):
+    """
+    Generate all visualizations and comparison reports.
+    
+    Parameters
+    ----------
+    results_dir : str
+        Directory that stores simulation outputs.
+    """
+    print("\nGenerating visualizations...")
+    results_dict = load_results(results_dir)
+    
+    if not results_dict['all']:
+        print("Visualization skipped: no result files found.")
+        return
+    
+    plot_statistics_comparison(results_dict['all'], results_dir)
+    
+    positions = load_sample_positions(results_dir)
+    if positions:
+        plot_position_distribution(positions, results_dir)
+    else:
+        print("No position samples found; skipping distribution plot.")
+    
+    create_comparison_report(results_dict.get('local'), results_dict.get('supercomputer'), results_dir)
+    print("Visualization completed.")
+
+
 def main():
     """Main function."""
     N = 10**4
@@ -459,7 +886,7 @@ def main():
                 if platform == 'local':
                     actual_batch_size = min(1000, M)
                 else:
-                    actual_batch_size = min(100000, M)
+                    actual_batch_size = min(500000, M)
             else:
                 actual_batch_size = batch_size
             required_memory = actual_batch_size * N * 8 / 1024**3
@@ -473,7 +900,7 @@ def main():
                         max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
                         batch_size = max(100, min(1000, max_batch_size))
                     else:
-                        batch_size = min(100000, M)
+                        batch_size = min(500000, M)
                     print(f"Automatically set batch size: {batch_size:,} trajectories")
         except ImportError:
             pass
@@ -488,6 +915,11 @@ def main():
             save_sample_positions(final_positions_sample, N, M)
         else:
             print("Position sample unavailable (too few data)")
+        
+        try:
+            generate_visualizations('results')
+        except Exception as viz_error:
+            print(f"Visualization step skipped due to error: {viz_error}")
         
         print(f"\nPlatform: {platform}")
         print("\nSimulation completed successfully!")
