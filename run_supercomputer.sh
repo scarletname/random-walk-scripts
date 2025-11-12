@@ -16,4 +16,3 @@ module purge
 module load python/3.9
 
 python3 random_walk.py 10000 100000000 supercomputer 42
-python3 visualize.py
