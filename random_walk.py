@@ -111,8 +111,9 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         current_batch_size = end_idx - start_idx
         
         # On supercomputer, process in chunks to avoid memory issues
-        if platform == 'supercomputer' and current_batch_size > 50000:
-            chunk_size = 50000
+        # Use larger chunks for better performance (100K instead of 50K)
+        if platform == 'supercomputer' and current_batch_size > 100000:
+            chunk_size = 100000
             num_chunks = (current_batch_size + chunk_size - 1) // chunk_size
             
             for chunk_idx in range(num_chunks):
@@ -152,7 +153,7 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
                 
                 # Cleanup chunk immediately (no need to store - already aggregated)
                 del chunk_random, chunk_positive, chunk_positions, chunk_squared
-                gc.collect()
+                # Don't call gc.collect() here - too slow, do it periodically instead
             
         else:
             # Standard processing for local or small batches
@@ -187,15 +188,8 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
             
             del batch_positions
         
-        # Additional cleanup on supercomputer after aggregation
-        if platform == 'supercomputer':
-            gc.collect()
-        
-        # Force garbage collection every batch on supercomputer, every 10 on local
-        if platform == 'supercomputer':
-            if (batch_idx + 1) % 10 == 0:  # Cleanup every 10 batches, not every batch
-                gc.collect()
-        elif (batch_idx + 1) % 10 == 0:
+        # Force garbage collection periodically (every 10 batches) for both platforms
+        if (batch_idx + 1) % 10 == 0:
             gc.collect()
         
         # Print progress - only every 10 batches or at important milestones
