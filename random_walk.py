@@ -8,6 +8,7 @@ import numpy as np
 import time
 import json
 import sys
+import gc
 from pathlib import Path
 from datetime import datetime
 import re
@@ -188,16 +189,13 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
         
         # Additional cleanup on supercomputer after aggregation
         if platform == 'supercomputer':
-            import gc
             gc.collect()
         
         # Force garbage collection every batch on supercomputer, every 10 on local
         if platform == 'supercomputer':
             if (batch_idx + 1) % 10 == 0:  # Cleanup every 10 batches, not every batch
-                import gc
                 gc.collect()
         elif (batch_idx + 1) % 10 == 0:
-            import gc
             gc.collect()
         
         # Print progress - only every 10 batches or at important milestones
@@ -281,7 +279,6 @@ def simulate_random_walk(N, M, platform='local', seed=None, batch_size=None, pro
     
     # Clean up memory
     del sum_positions_for_std
-    import gc
     gc.collect()
     
     results = {
