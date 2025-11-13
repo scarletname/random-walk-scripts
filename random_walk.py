@@ -12,10 +12,6 @@ from pathlib import Path
 from datetime import datetime
 import re
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
 
 class TeeOutput:
     """Class for simultaneous output to console and file."""
@@ -916,10 +912,12 @@ def main():
         else:
             print("Position sample unavailable (too few data)")
         
-        try:
-            generate_visualizations('results')
-        except Exception as viz_error:
-            print(f"Visualization step skipped due to error: {viz_error}")
+        # Visualization disabled for supercomputer compatibility
+        # Run visualize.py locally to generate plots from saved data
+        # try:
+        #     generate_visualizations('results')
+        # except Exception as viz_error:
+        #     print(f"Visualization step skipped due to error: {viz_error}")
         
         print(f"\nPlatform: {platform}")
         print("\nSimulation completed successfully!")
