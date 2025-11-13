@@ -802,7 +802,21 @@ def main():
     if len(sys.argv) > 4:
         seed = int(sys.argv[4])
     if len(sys.argv) > 5:
-        batch_size = int(sys.argv[5])
+        # Argument can be either batch_size or num_batches
+        arg5 = sys.argv[5]
+        if arg5.startswith('b'):
+            # If starts with 'b', it's batch_size
+            batch_size = int(arg5[1:])
+        elif arg5.startswith('n'):
+            # If starts with 'n', it's num_batches
+            num_batches = int(arg5[1:])
+            batch_size = M // num_batches
+            if M % num_batches != 0:
+                print(f"WARNING: M={M:,} does not divide evenly into {num_batches} batches!")
+                print(f"Using batch_size = {batch_size:,} (last batch will have {M - batch_size * (num_batches - 1):,} trajectories)")
+        else:
+            # Default: treat as batch_size
+            batch_size = int(arg5)
     
     print("=" * 60)
     print("RANDOM WALK SIMULATION")
@@ -828,57 +842,64 @@ def main():
             import psutil
             available_memory = psutil.virtual_memory().available / 1024**3
             print(f"Available memory: {available_memory:.2f} GB")
-            
+        except ImportError:
+            available_memory = None
+            print("psutil not available, memory checks disabled")
+        
+        # If batch_size is explicitly provided, use it (but verify it divides M)
+        if batch_size is not None:
+            if M % batch_size != 0:
+                print(f"WARNING: batch_size {batch_size:,} does not divide M={M:,} evenly!")
+                print(f"Adjusting to: {M // ((M + batch_size - 1) // batch_size):,} trajectories per batch")
+                num_batches = (M + batch_size - 1) // batch_size
+                batch_size = M // num_batches
+            if available_memory:
+                required_memory = batch_size * N * 8 / 1024**3
+                print(f"Using provided batch size: {batch_size:,} trajectories (~{required_memory:.3f} GB)")
+                if required_memory > available_memory * 0.85:
+                    print(f"WARNING: Batch size requires {required_memory:.3f} GB, but only {available_memory:.2f} GB available!")
+        else:
             # Calculate optimal batch_size based on available memory
-            if batch_size is None:
+            if available_memory:
                 if platform == 'local':
                     # For local: use 60% of available memory, but cap at 1000
                     max_batch_size = int(available_memory * 0.6 * 1024**3 / (N * 8))
                     batch_size = max(100, min(1000, max_batch_size))
                 else:
-                    # For supercomputer: use 80% of available memory for maximum speed
-                    # Each element is 8 bytes: batch_size * N * 8 = memory in bytes
+                    # For supercomputer: optimize for number of batches rather than batch size
+                    # More smaller batches can be faster due to better cache locality
+                    # Try to use 70-80% of memory but with more batches for better performance
                     max_batch_size = int(available_memory * 0.80 * 1024**3 / (N * 8))
-                    batch_size = max(10000, min(max_batch_size, M))  # At least 10K, but use available memory
-                    print(f"Calculated optimal batch size: {batch_size:,} trajectories (using 80% of available memory)")
-            
-            required_memory = batch_size * N * 8 / 1024**3
-            print(f"Expected usage per batch: ~{required_memory:.3f} GB")
-            
-            if required_memory > available_memory * 0.85:
-                print("WARNING: Batch size may be too large! Reducing to 75% of available memory.")
-                max_batch_size = int(available_memory * 0.75 * 1024**3 / (N * 8))
-                batch_size = max(10000, min(max_batch_size, M))
-                required_memory = batch_size * N * 8 / 1024**3
-                print(f"Adjusted batch size: {batch_size:,} trajectories (~{required_memory:.3f} GB)")
-            
-            # Find maximum batch_size that divides M exactly and fits in memory
-            # This maximizes memory usage with no remainder
-            if platform == 'supercomputer' and batch_size < M:
-                max_allowed = int(available_memory * 0.80 * 1024**3 / (N * 8))
+                    
+                    # Calculate optimal number of batches (aim for 200-300 batches)
+                    # This balances memory usage with cache efficiency
+                    target_num_batches = 250  # Good balance: not too many iterations, but good cache usage
+                    calculated_batch_size = M // target_num_batches
+                    
+                    # If calculated batch size fits in memory, use it
+                    if calculated_batch_size <= max_batch_size:
+                        batch_size = calculated_batch_size
+                        num_batches = target_num_batches
+                        required_memory = batch_size * N * 8 / 1024**3
+                        print(f"Using {num_batches} batches with {batch_size:,} trajectories per batch (~{required_memory:.3f} GB)")
+                        print(f"This optimizes for cache efficiency while using {required_memory/available_memory*100:.1f}% of available memory")
+                    else:
+                        # If target doesn't fit, use maximum memory
+                        batch_size = max(10000, min(max_batch_size, M))
+                        num_batches = (M + batch_size - 1) // batch_size
+                        required_memory = batch_size * N * 8 / 1024**3
+                        print(f"Calculated optimal batch size: {batch_size:,} trajectories (using 80% of available memory)")
+                        print(f"This creates {num_batches} batches")
                 
-                # Find the largest divisor of M that is <= max_allowed
-                # Start from max_allowed and go down to find exact divisor
-                optimal_batch = 0
-                for candidate in range(max_allowed, max(10000, max_allowed - 200000), -1):
-                    if M % candidate == 0:
-                        optimal_batch = candidate
-                        break
-                
-                # If no exact divisor found, use floor division (will be slightly smaller)
-                if optimal_batch == 0:
-                    num_batches = (M + max_allowed - 1) // max_allowed
-                    optimal_batch = M // num_batches
-                
-                batch_size = optimal_batch
-                num_batches = M // batch_size
-                required_memory = batch_size * N * 8 / 1024**3
-                
-                print(f"Optimal batch size for exact division: {batch_size:,} trajectories (~{required_memory:.3f} GB)")
-                print(f"This will create exactly {num_batches} batches of equal size (M = {batch_size:,} × {num_batches:,} = {batch_size * num_batches:,})")
-        except ImportError:
-            print("psutil not available, using default batch sizes")
-            if batch_size is None:
+                # Ensure required_memory is set
+                if 'required_memory' not in locals() or 'num_batches' not in locals():
+                    if 'num_batches' not in locals():
+                        num_batches = (M + batch_size - 1) // batch_size
+                    if 'required_memory' not in locals():
+                        required_memory = batch_size * N * 8 / 1024**3
+                    print(f"Final configuration: {num_batches} batches, {batch_size:,} trajectories per batch (~{required_memory:.3f} GB)")
+            else:
+                # Fallback if psutil not available
                 if platform == 'local':
                     batch_size = min(1000, M)
                 else:
