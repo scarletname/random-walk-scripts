@@ -72,20 +72,25 @@ def simulate_2d_random_walk_4_directions(N, M, seed=None, batch_size=None):
             progress = 100.0 * (batch_idx + 1) / num_batches
             print(f"Прогресс 4 направлений: {progress:.1f}% ({batch_idx + 1}/{num_batches} батчей)", flush=True)
         
-        # Генерация случайных направлений для всех шагов
+        # Оптимизированный алгоритм: подсчитываем количество каждого направления
+        # вместо создания массива смещений (batch_size, N, 2) - это экономит ~16GB памяти
         random_directions = np.random.randint(0, 4, size=(current_batch_size, N), dtype=np.int32)
         
-        # Вычисление смещений
-        batch_displacements = directions[random_directions]  # (batch_size, N, 2)
-        batch_positions = np.sum(batch_displacements, axis=1, dtype=np.int32)  # (batch_size, 2)
+        # Подсчет количества каждого направления для каждой траектории
+        # directions: 0=N(0,1), 1=E(1,0), 2=S(0,-1), 3=W(-1,0)
+        counts_N = np.sum(random_directions == 0, axis=1, dtype=np.int32)  # количество шагов N
+        counts_E = np.sum(random_directions == 1, axis=1, dtype=np.int32)  # количество шагов E
+        counts_S = np.sum(random_directions == 2, axis=1, dtype=np.int32)  # количество шагов S
+        counts_W = np.sum(random_directions == 3, axis=1, dtype=np.int32)  # количество шагов W
         
-        del batch_displacements, random_directions
+        # Вычисление финальных позиций напрямую без создания массива смещений
+        batch_x = counts_E - counts_W  # E дает +1, W дает -1
+        batch_y = counts_N - counts_S  # N дает +1, S дает -1
+        batch_positions = np.stack([batch_x, batch_y], axis=1).astype(np.int32)
         
-        # Разделение на x и y координаты
-        batch_x = batch_positions[:, 0]
-        batch_y = batch_positions[:, 1]
+        del random_directions, counts_N, counts_E, counts_S, counts_W
         
-        # Радиальные расстояния
+        # Радиальные расстояния (batch_x и batch_y уже вычислены выше)
         batch_r_squared = (batch_x.astype(np.int64) ** 2 + batch_y.astype(np.int64) ** 2).astype(np.float64)
         batch_r = np.sqrt(batch_r_squared)
         
@@ -237,17 +242,32 @@ def simulate_2d_random_walk_8_directions(N, M, seed=None, batch_size=None):
             progress = 100.0 * (batch_idx + 1) / num_batches
             print(f"Прогресс 8 направлений: {progress:.1f}% ({batch_idx + 1}/{num_batches} батчей)", flush=True)
         
-        # Генерация случайных направлений
+        # Оптимизированный алгоритм для 8 направлений
+        # Для 8 направлений сложнее, но можно оптимизировать суммирование
         random_directions = np.random.randint(0, 8, size=(current_batch_size, N), dtype=np.int32)
         
-        # Вычисление смещений
-        batch_displacements = directions[random_directions]  # (batch_size, N, 2)
-        batch_positions = np.sum(batch_displacements, axis=1, dtype=np.float32)  # (batch_size, 2)
+        # Быстрое вычисление позиций через прямое суммирование смещений
+        # Используем то, что каждое направление имеет фиксированное смещение
+        sqrt2_inv = 1.0 / np.sqrt(2)
         
-        del batch_displacements, random_directions
+        # Подсчет количества каждого направления (полностью векторизованная версия)
+        # Используем broadcasting для подсчета всех направлений одновременно
+        counts = np.zeros((current_batch_size, 8), dtype=np.int32)
+        for dir_idx in range(8):
+            counts[:, dir_idx] = np.sum(random_directions == dir_idx, axis=1, dtype=np.int32)
         
-        batch_x = batch_positions[:, 0]
-        batch_y = batch_positions[:, 1]
+        # Вычисление позиций: x = Σ(count * dx), y = Σ(count * dy)
+        # directions: [N, NE, E, SE, S, SW, W, NW]
+        # dx для каждого: [0, sqrt2_inv, 1, sqrt2_inv, 0, -sqrt2_inv, -1, -sqrt2_inv]
+        # dy для каждого: [1, sqrt2_inv, 0, -sqrt2_inv, -1, -sqrt2_inv, 0, sqrt2_inv]
+        dx = np.array([0, sqrt2_inv, 1, sqrt2_inv, 0, -sqrt2_inv, -1, -sqrt2_inv], dtype=np.float32)
+        dy = np.array([1, sqrt2_inv, 0, -sqrt2_inv, -1, -sqrt2_inv, 0, sqrt2_inv], dtype=np.float32)
+        
+        batch_x = np.dot(counts.astype(np.float32), dx)
+        batch_y = np.dot(counts.astype(np.float32), dy)
+        batch_positions = np.stack([batch_x, batch_y], axis=1).astype(np.float32)
+        
+        del random_directions, counts
         
         batch_r_squared = batch_x ** 2 + batch_y ** 2
         batch_r = np.sqrt(batch_r_squared)
