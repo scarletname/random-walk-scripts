@@ -3,7 +3,7 @@
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH -p tornado
-#SBATCH -t 04:00:00
+#SBATCH -t 12:00:00  # Увеличено до 12 часов (для M=100M нужно больше времени)
 #SBATCH -J random_walk_2d
 #SBATCH -o random_walk_2d-%j.out
 #SBATCH -e random_walk_2d-%j.err
@@ -15,9 +15,6 @@ fi
 module purge
 module load python/3.9
 
-
-python3 random_walk_2d.py 10000 100000000 42 200000
-
-# Альтернативный вариант с автоматическим расчетом batch_size:
-# python3 random_walk_2d.py 10000 100000000 42
+# Используем -u для отключения буферизации вывода (чтобы видеть вывод в реальном времени)
+python3 -u random_walk_2d.py 10000 100000000 42 200000
 

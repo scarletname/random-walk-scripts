@@ -67,6 +67,11 @@ def simulate_2d_random_walk_4_directions(N, M, seed=None, batch_size=None):
         end_idx = min(start_idx + batch_size, M)
         current_batch_size = end_idx - start_idx
         
+        # Вывод прогресса каждые 10% или каждые 50 батчей
+        if batch_idx == 0 or (batch_idx + 1) % max(1, num_batches // 20) == 0 or (batch_idx + 1) % 50 == 0:
+            progress = 100.0 * (batch_idx + 1) / num_batches
+            print(f"Прогресс 4 направлений: {progress:.1f}% ({batch_idx + 1}/{num_batches} батчей)", flush=True)
+        
         # Генерация случайных направлений для всех шагов
         random_directions = np.random.randint(0, 4, size=(current_batch_size, N), dtype=np.int32)
         
@@ -116,7 +121,8 @@ def simulate_2d_random_walk_4_directions(N, M, seed=None, batch_size=None):
         
         del batch_positions, batch_x, batch_y, batch_r_squared, batch_r, batch_angles
         
-        if (batch_idx + 1) % 10 == 0:
+        # Сборка мусора реже для ускорения (каждые 50 батчей вместо 10)
+        if (batch_idx + 1) % 50 == 0:
             gc.collect()
     
     # Вычисление итоговых статистик
@@ -226,6 +232,11 @@ def simulate_2d_random_walk_8_directions(N, M, seed=None, batch_size=None):
         end_idx = min(start_idx + batch_size, M)
         current_batch_size = end_idx - start_idx
         
+        # Вывод прогресса каждые 10% или каждые 50 батчей
+        if batch_idx == 0 or (batch_idx + 1) % max(1, num_batches // 20) == 0 or (batch_idx + 1) % 50 == 0:
+            progress = 100.0 * (batch_idx + 1) / num_batches
+            print(f"Прогресс 8 направлений: {progress:.1f}% ({batch_idx + 1}/{num_batches} батчей)", flush=True)
+        
         # Генерация случайных направлений
         random_directions = np.random.randint(0, 8, size=(current_batch_size, N), dtype=np.int32)
         
@@ -271,7 +282,8 @@ def simulate_2d_random_walk_8_directions(N, M, seed=None, batch_size=None):
         
         del batch_positions, batch_x, batch_y, batch_r_squared, batch_r, batch_angles
         
-        if (batch_idx + 1) % 10 == 0:
+        # Сборка мусора реже для ускорения (каждые 50 батчей вместо 10)
+        if (batch_idx + 1) % 50 == 0:
             gc.collect()
     
     # Вычисление итоговых статистик
@@ -434,10 +446,12 @@ def main():
     print("=" * 60)
     print(f"Параметры: N={N}, M={M}, seed={seed}, batch_size={batch_size}")
     print()
+    sys.stdout.flush()  # Принудительная очистка буфера
     
     # Моделирование с 4 направлениями
     print("Моделирование с 4 направлениями (N, E, S, W)...")
     print("-" * 60)
+    sys.stdout.flush()  # Принудительная очистка буфера
     results_4dir, pos_4dir, rad_4dir, ang_4dir = simulate_2d_random_walk_4_directions(
         N, M, seed, batch_size
     )
@@ -451,6 +465,7 @@ def main():
     # Моделирование с 8 направлениями
     print("Моделирование с 8 направлениями (включая диагонали)...")
     print("-" * 60)
+    sys.stdout.flush()  # Принудительная очистка буфера
     results_8dir, pos_8dir, rad_8dir, ang_8dir = simulate_2d_random_walk_8_directions(
         N, M, seed, batch_size
     )
